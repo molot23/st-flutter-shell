@@ -1,11 +1,17 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
 import '../services/settings_service.dart';
+
+/// Modern Chrome-on-Android UA so SillyTavern serves the full web UI.
+const String _kMobileChromeUa =
+    'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 '
+    '(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36';
 
 class WebViewScreen extends StatefulWidget {
   const WebViewScreen({super.key, required this.initialUrl});
@@ -24,6 +30,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
   var _loading = true;
   var _progress = 0;
   String? _title;
+  String _basicUser = '';
+  String _basicPass = '';
 
   @override
   void initState() {
@@ -34,16 +42,32 @@ class _WebViewScreenState extends State<WebViewScreen> {
   Future<void> _initWebView() async {
     final user = await SettingsService.instance.getUsername();
     final pass = await SettingsService.instance.getPassword();
+    _basicUser = user;
+    _basicPass = pass;
+
     final headers = <String, String>{};
     if (user.isNotEmpty || pass.isNotEmpty) {
       final token = base64Encode(utf8.encode('$user:$pass'));
       headers['Authorization'] = 'Basic $token';
     }
 
+    // Push credentials to native side so WebViewClient can answer HTTP auth
+    // challenges for CSS/JS/subresources (loadRequest headers only cover the
+    // main document).
+    try {
+      await _sslChannel.invokeMethod('setBasicAuth', {
+        'username': user,
+        'password': pass,
+      });
+    } catch (e) {
+      debugPrint('setBasicAuth channel: $e');
+    }
+
     late final WebViewController controller;
     controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      ..setBackgroundColor(const Color(0xFF121212))
+      // Neutral background: do not force a dark canvas that hides unstyled ST text.
+      ..setBackgroundColor(const Color(0xFFFFFFFF))
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (p) {
@@ -51,8 +75,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
           },
           onPageStarted: (_) {
             if (mounted) setState(() => _loading = true);
-            // Re-apply SSL trust in case WebView attached after first channel call.
-            _sslChannel.invokeMethod('enableTrustSelfSigned').catchError((_) {});
+            _installNativeWebViewHooks();
           },
           onPageFinished: (_) async {
             final t = await controller.getTitle();
@@ -64,7 +87,30 @@ class _WebViewScreenState extends State<WebViewScreen> {
             }
           },
           onWebResourceError: (err) {
-            debugPrint('WebView error: ${err.errorCode} ${err.description}');
+            debugPrint(
+              'WebView error: ${err.errorCode} ${err.description} '
+              '(mainFrame=${err.isForMainFrame})',
+            );
+          },
+          onHttpError: (err) {
+            debugPrint(
+              'WebView HTTP ${err.response?.statusCode} '
+              'url=${err.request?.uri}',
+            );
+          },
+          // Critical: default cancels → CSS/JS behind Basic Auth never load.
+          onHttpAuthRequest: (request) {
+            if (_basicUser.isNotEmpty || _basicPass.isNotEmpty) {
+              request.onProceed(
+                WebViewCredential(user: _basicUser, password: _basicPass),
+              );
+            } else {
+              request.onCancel();
+            }
+          },
+          // Critical: default cancels self-signed TLS for every resource.
+          onSslAuthError: (error) async {
+            await error.proceed();
           },
         ),
       );
@@ -72,25 +118,44 @@ class _WebViewScreenState extends State<WebViewScreen> {
     if (controller.platform is AndroidWebViewController) {
       final android = controller.platform as AndroidWebViewController;
       await android.setMediaPlaybackRequiresUserGesture(false);
+      await android.setUserAgent(_kMobileChromeUa);
+      await android.enableZoom(true);
+      await android.setMixedContentMode(MixedContentMode.alwaysAllow);
+      await android.setAllowFileAccess(true);
+      await android.setAllowContentAccess(true);
+      // DOM storage is already enabled by AndroidWebViewController defaults.
+
+      final cookieManager = WebViewCookieManager();
+      final platformCookies = cookieManager.platform;
+      if (platformCookies is AndroidWebViewCookieManager) {
+        await platformCookies.setAcceptThirdPartyCookies(android, true);
+      }
+
+      if (kDebugMode) {
+        await AndroidWebViewController.enableDebugging(true);
+      }
     }
 
     if (mounted) {
       setState(() => _controller = controller);
     }
 
-    // Install native SSL proceed hook after the platform WebView exists.
-    WidgetsBinding.instance.addPostFrameCallback((_) async {
-      try {
-        await _sslChannel.invokeMethod('enableTrustSelfSigned');
-      } catch (e) {
-        debugPrint('SSL channel: $e');
-      }
+    // Install native SSL / auth / settings after the platform view exists.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _installNativeWebViewHooks();
     });
 
     await controller.loadRequest(
       Uri.parse(widget.initialUrl),
       headers: headers,
     );
+  }
+
+  void _installNativeWebViewHooks() {
+    _sslChannel.invokeMethod('enableTrustSelfSigned').catchError((Object e) {
+      debugPrint('SSL channel: $e');
+      return null;
+    });
   }
 
   Future<bool> _handleBack() async {
@@ -100,6 +165,23 @@ class _WebViewScreenState extends State<WebViewScreen> {
       return false;
     }
     return true;
+  }
+
+  Future<void> _reload() async {
+    final c = _controller;
+    if (c == null) return;
+    // Re-apply auth header on explicit reload of the top-level document.
+    final headers = <String, String>{};
+    if (_basicUser.isNotEmpty || _basicPass.isNotEmpty) {
+      final token = base64Encode(utf8.encode('$_basicUser:$_basicPass'));
+      headers['Authorization'] = 'Basic $token';
+    }
+    _installNativeWebViewHooks();
+    final current = await c.currentUrl();
+    final url = (current != null && current.isNotEmpty)
+        ? current
+        : widget.initialUrl;
+    await c.loadRequest(Uri.parse(url), headers: headers);
   }
 
   @override
@@ -125,7 +207,7 @@ class _WebViewScreenState extends State<WebViewScreen> {
             IconButton(
               tooltip: 'Reload',
               icon: const Icon(Icons.refresh),
-              onPressed: controller == null ? null : () => controller.reload(),
+              onPressed: controller == null ? null : _reload,
             ),
           ],
           bottom: PreferredSize(
