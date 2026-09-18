@@ -40,7 +40,8 @@ class _WebViewScreenState extends State<WebViewScreen> {
       headers['Authorization'] = 'Basic $token';
     }
 
-    final controller = WebViewController()
+    late final WebViewController controller;
+    controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(const Color(0xFF121212))
       ..setNavigationDelegate(
