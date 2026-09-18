@@ -9,6 +9,7 @@ Flutter Android WebView client for a self-hosted SillyTavern instance.
 - Inject Basic Auth when credentials are set
 - Allow self-signed HTTPS (for reverse-proxy / tunnel setups you control)
 - Android back: WebView history first, then leave the page
+- Android file chooser for SillyTavern character card import (“导入卡”)
 
 ## Prerequisites
 

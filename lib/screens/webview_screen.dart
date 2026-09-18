@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -125,6 +126,9 @@ class _WebViewScreenState extends State<WebViewScreen> {
       await android.setAllowContentAccess(true);
       // DOM storage is already enabled by AndroidWebViewController defaults.
 
+      // SillyTavern “导入卡” / file inputs need a WebView file chooser.
+      await android.setOnShowFileSelector(_androidFileSelector);
+
       final cookieManager = WebViewCookieManager();
       final platformCookies = cookieManager.platform;
       if (platformCookies is AndroidWebViewCookieManager) {
@@ -149,6 +153,104 @@ class _WebViewScreenState extends State<WebViewScreen> {
       Uri.parse(widget.initialUrl),
       headers: headers,
     );
+  }
+
+
+  /// Maps WebView accept types to a reasonable [FileType] / extension list
+  /// for SillyTavern character cards (PNG/WebP with embedded JSON, or .json).
+  static ({FileType type, List<String>? extensions}) _fileTypeForAccept(
+    List<String> acceptTypes,
+  ) {
+    final normalized = acceptTypes
+        .map((t) => t.trim().toLowerCase())
+        .where((t) => t.isNotEmpty)
+        .toList();
+    if (normalized.isEmpty) {
+      return (
+        type: FileType.custom,
+        extensions: const ['png', 'webp', 'jpg', 'jpeg', 'json'],
+      );
+    }
+
+    final joined = normalized.join(',');
+    final wantsImage = normalized.any(
+      (t) =>
+          t == 'image/*' ||
+          t.startsWith('image/') ||
+          t == '.png' ||
+          t == '.webp' ||
+          t == '.jpg' ||
+          t == '.jpeg' ||
+          t == 'png' ||
+          t == 'webp',
+    );
+    final wantsJson = normalized.any(
+      (t) =>
+          t == 'application/json' ||
+          t == '.json' ||
+          t == 'json' ||
+          t.contains('json'),
+    );
+
+    if (wantsImage && !wantsJson) {
+      return (type: FileType.image, extensions: null);
+    }
+    if (wantsJson && !wantsImage) {
+      return (type: FileType.custom, extensions: const ['json']);
+    }
+
+    // Mixed or unknown (ST cards are often image/* + json): allow card-ish types.
+    final exts = <String>{};
+    for (final t in normalized) {
+      if (t.startsWith('.')) {
+        exts.add(t.substring(1));
+      } else if (t == 'image/png' || t == 'png') {
+        exts.add('png');
+      } else if (t == 'image/webp' || t == 'webp') {
+        exts.add('webp');
+      } else if (t == 'image/jpeg' ||
+          t == 'image/jpg' ||
+          t == 'jpg' ||
+          t == 'jpeg') {
+        exts.add('jpg');
+        exts.add('jpeg');
+      } else if (t == 'application/json' || t == 'json') {
+        exts.add('json');
+      }
+    }
+    if (exts.isEmpty ||
+        joined.contains('image/*') ||
+        wantsImage ||
+        wantsJson) {
+      exts.addAll(['png', 'webp', 'jpg', 'jpeg', 'json']);
+    }
+    return (type: FileType.custom, extensions: exts.toList());
+  }
+
+  Future<List<String>> _androidFileSelector(FileSelectorParams params) async {
+    try {
+      final mapped = _fileTypeForAccept(params.acceptTypes);
+      final allowMultiple = params.mode == FileSelectorMode.openMultiple;
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: allowMultiple,
+        type: mapped.type,
+        allowedExtensions: mapped.extensions,
+        withData: false,
+      );
+      if (result == null) {
+        return <String>[];
+      }
+      final uris = <String>[];
+      for (final file in result.files) {
+        final path = file.path;
+        if (path == null || path.isEmpty) continue;
+        uris.add(Uri.file(path).toString());
+      }
+      return uris;
+    } catch (e) {
+      debugPrint('file selector: $e');
+      return <String>[];
+    }
   }
 
   void _installNativeWebViewHooks() {
