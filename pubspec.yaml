@@ -1,5 +1,5 @@
 name: st_flutter_shell
-description: 家庭酒馆 — Flutter WebView shell for SillyTavern behind SakuraFrp.
+description: Flutter WebView shell for self-hosted SillyTavern.
 publish_to: 'none'
 version: 1.0.0+1
 

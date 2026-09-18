@@ -15,7 +15,7 @@ import io.flutter.plugin.common.MethodChannel
 /**
  * Hosts a MethodChannel that wraps every WebView's WebViewClient so
  * [WebViewClient.onReceivedSslError] calls [SslErrorHandler.proceed].
- * Needed for SakuraFrp / self-signed HTTPS endpoints.
+ * Needed for self-signed HTTPS endpoints you control.
  */
 class MainActivity : FlutterActivity() {
     private val channelName = "com.molot23.stshell/ssl"

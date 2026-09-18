@@ -6,7 +6,7 @@ class SettingsService {
   SettingsService._();
   static final SettingsService instance = SettingsService._();
 
-  static const String defaultUrl = 'https://103.91.208.41:23013';
+  static const String defaultUrl = '';
   static const String _keyUrl = 'st_shell_url';
   static const String _keyUser = 'st_shell_basic_user';
   static const String _keyPass = 'st_shell_basic_pass';
